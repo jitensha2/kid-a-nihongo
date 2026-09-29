@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Kid あ</title>
+  <meta name="description" content="Japanese 1–3 vocabulary and kanji, a few words a day.">
+  <meta name="theme-color" content="#412402">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Kid あ">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="app" aria-live="polite"></main>
+  <nav id="nav" class="nav" hidden>
+    <button data-tab="home"><span class="nav-ico">あ</span>Home</button>
+    <button data-tab="kanji"><span class="nav-ico">字</span>OK Kanji</button>
+    <button data-tab="unknown"><span class="nav-ico">？</span>Superunknown</button>
+    <button data-tab="settings"><span class="nav-ico">⚙</span>Settings</button>
+  </nav>
+  <div id="quake" class="quake" hidden></div>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
