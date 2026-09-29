@@ -99,6 +99,10 @@
     for (const k of DATA.kanji) if (k.y === 3) for (const e of k.ex) j3.add(norm(e.r));
     for (const w of WORDS) w.link3 = w.y < 3 && (w.also.includes(3) || j3.has(norm(w.r || w.jp)));
   })();
+  // Verbs carry whole sentences, so they're introduced first and reviewed more often.
+  for (const w of WORDS) w.verb = /^\(?(to|gives?)\s/i.test(w.en) || /ています$/.test(w.jp);
+  const VERB_INTERVAL = 0.6;
+
   const KANJI = DATA.kanji.map(k => Object.assign({ kind: 'k' }, k));
   KANJI.forEach(k => BY_ID.set(k.id, k));
 
@@ -117,7 +121,7 @@
     if (kind === 'w') {
       return WORDS.filter(w => !S.items[w.id])
         .map((w, i) => ({ w, i, r: wordRank(w) }))
-        .sort((a, b) => (a.r - b.r) || (a.w.y - b.w.y) || cmpUnit(a.w.u, b.w.u) || (a.i - b.i))
+        .sort((a, b) => (a.r - b.r) || (b.w.verb - a.w.verb) || (a.w.y - b.w.y) || cmpUnit(a.w.u, b.w.u) || (a.i - b.i))
         .map(x => x.w);
     }
     const order = { 3: 0, 2: 1, 1: 2 };
@@ -164,7 +168,8 @@
     if (correct) {
       if (it.due > t) return; // extra practice before it was due: no schedule change
       it.s = Math.min(it.s + 1, INTERVALS.length - 1);
-      it.due = t + INTERVALS[it.s];
+      const days = INTERVALS[it.s];
+      it.due = t + (item.verb ? Math.max(1, Math.round(days * VERB_INTERVAL)) : days);
     } else {
       it.miss = (it.miss || 0) + 1;
       it.s = 1;
