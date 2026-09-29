@@ -193,16 +193,34 @@
       .replace(/[〜~]/g, '')
       .trim();
   }
-  function speak(text) {
-    if (!canSpeak) return;
+  let currentUtterance = null; // keep a reference: Chrome can drop utterances that get garbage-collected
+  function speak(text, onError) {
+    if (!canSpeak) { if (onError) onError('This browser has no speech support.'); return; }
     const t = speechText(text);
     if (!t) return;
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(t);
-    u.lang = 'ja-JP';
-    if (jaVoice) u.voice = jaVoice;
-    u.rate = 0.9;
-    speechSynthesis.speak(u);
+    if (!jaVoice) pickVoice();
+    const go = () => {
+      const u = new SpeechSynthesisUtterance(t);
+      u.lang = 'ja-JP';
+      if (jaVoice) u.voice = jaVoice;
+      u.rate = 0.9;
+      u.onend = () => { if (currentUtterance === u) currentUtterance = null; };
+      u.onerror = e => { if (onError && e.error !== 'interrupted' && e.error !== 'canceled') onError(e.error); };
+      currentUtterance = u;
+      speechSynthesis.speak(u);
+      if (speechSynthesis.paused) speechSynthesis.resume();
+    };
+    // On Android, speaking right after cancel() is often silently dropped, so wait a beat.
+    if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(go, 120); }
+    else go();
+  }
+  function testVoice() {
+    const msg = document.getElementById('voice-msg');
+    const all = canSpeak ? speechSynthesis.getVoices() : [];
+    if (msg) msg.textContent = jaVoice
+      ? `Using: ${jaVoice.name}. Playing “こんにちは”… (make sure media volume is up)`
+      : `No Japanese voice found (${all.length} voices on this device). ${voiceHelp()}`;
+    speak('こんにちは', err => { if (msg) msg.textContent = `The voice didn’t play (${err}). ${voiceHelp()}`; });
   }
   const sayWord = w => speak(w.r || w.jp);
 
@@ -301,7 +319,7 @@
         <button class="btn primary" id="go-check">Quick check</button>
         <button class="btn ghost" id="go-fresh">Skip for now</button>
       </div>`;
-    $app.querySelector('#test-voice').onclick = () => speak('こんにちは');
+    $app.querySelector('#test-voice').onclick = testVoice;
     $app.querySelector('#go-check').onclick = () => { S.introDone = true; save(); startPlacement(1); };
     $app.querySelector('#go-fresh').onclick = () => { S.introDone = true; save(); render(); };
   }
@@ -502,7 +520,7 @@
     $app.querySelector('#autoplay').onchange = e => { S.settings.autoplay = e.target.checked; save(); };
     $app.querySelector('#readings').onchange = e => { S.settings.readings = e.target.checked; save(); };
     $app.querySelector('#kwrite').onchange = e => { S.settings.kanjiWrite = e.target.checked; save(); };
-    $app.querySelector('#tv').onclick = () => speak('こんにちは');
+    $app.querySelector('#tv').onclick = testVoice;
     $app.querySelector('#bk').onclick = saveBackup;
     const $f = $app.querySelector('#rsfile');
     $app.querySelector('#rs').onclick = () => $f.click();
