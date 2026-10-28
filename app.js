@@ -19,7 +19,7 @@
     { min: 5, name: '', label: 'Normal pace' },
     { min: 8, name: 'Boost', label: 'Boost' },
     { min: 14, name: 'Aura', label: 'Aura' },
-    { min: 22, name: 'Beast Mode', label: 'Beast Mode' },
+    { min: 21, name: 'Beast Mode', label: 'Beast Mode' },
   ];
   const DONE_LINES = [
     'Everything in its right place.',
