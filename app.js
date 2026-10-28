@@ -181,7 +181,51 @@
   const stageOf = it => (S.items[it.id] ? S.items[it.id].s : 0);
   const knownCount = kind => Object.keys(S.items).filter(id => BY_ID.has(id) && BY_ID.get(id).kind === kind && S.items[id].s >= KNOWN_STAGE).length;
   const learningCount = kind => Object.keys(S.items).filter(id => BY_ID.has(id) && BY_ID.get(id).kind === kind && S.items[id].s < KNOWN_STAGE).length;
-  const minutes = p => Math.max(2, Math.round(p.totalReviews * 0.15 + p.totalNew * 1.1));
+  // ---------------------------------------------------------------------------
+  // Time: his own pace (average seconds per card), learned from real sessions.
+  // Starts from a guess and adjusts as he studies. Used for every time estimate.
+  // ---------------------------------------------------------------------------
+  const CARD_TIME_CAP = 60;  // seconds; longer means the phone was set down, so don't count it all
+  const pace = () => Object.assign({ learn: 20, quiz: 8 }, S.pace);
+  function recordCardTime(mode, ms) {
+    const sec = Math.min(ms / 1000, CARD_TIME_CAP);
+    if (!(sec > 0.3)) return;
+    const p = pace();
+    const k = mode === 'learn' ? 'learn' : 'quiz';
+    p[k] = p[k] * 0.85 + sec * 0.15;
+    S.pace = p;
+    const d = dayRec();
+    d.sec = (d.sec || 0) + sec;
+    if (session) session.sec = (session.sec || 0) + sec;
+  }
+  // A new word costs its card plus its quiz; a few misses come back for another try.
+  const planSeconds = p => { const pc = pace(); return p.totalNew * (pc.learn + pc.quiz * 1.3) + p.totalReviews * pc.quiz * 1.15; };
+  const minutes = p => Math.max(1, Math.round(planSeconds(p) / 60));
+  function sessionSecondsLeft(s) {
+    const pc = pace();
+    let sec = 0;
+    for (const st of s.queue.slice(s.pos)) sec += st.mode === 'learn' ? pc.learn + pc.quiz : pc.quiz;
+    return sec * 1.08;
+  }
+  function fmtDur(sec) {
+    const m = Math.round(sec / 60);
+    if (m < 1) return 'under a minute';
+    if (m < 60) return `${m} min`;
+    return `${Math.floor(m / 60)} h ${m % 60} min`;
+  }
+  const fmtLeft = sec => (sec < 60 ? '<1 min' : `~${Math.ceil(sec / 60)} min`);
+
+  // Session counts for the stats card.
+  function recordSessionEnd(finished) {
+    const s = session;
+    if (!s || s.counted || !s.done) return;
+    s.counted = true;
+    const st = S.stats || (S.stats = { sessions: 0, sec: 0, stopped: 0 });
+    st.sessions++;
+    st.sec += s.sec || 0;
+    if (!finished && s.daily) st.stopped++;
+    dayRec().known = knownCount('w');
+  }
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   // The "Today's session" message: how many new and review cards, plus any carry-over.
@@ -388,6 +432,9 @@
   function renderHome() {
     const p = plan('w', false);
     const kp = plan('k', false);
+    // Note days the app had to ease off or pause new words (shown in Your stats).
+    const ease = p.paused ? 'pause' : p.tapered ? 'taper' : null;
+    if (ease && dayRec().ease !== ease) { dayRec().ease = ease; save(); }
     const known = knownCount('w');
     const learning = learningCount('w');
     const nothing = !p.totalReviews && !p.totalNew;
@@ -540,6 +587,7 @@
           <p class="faint" id="voice-msg" style="margin-top:6px">${jaVoice ? `Using: ${esc(jaVoice.name)}` : voiceHelp()}</p>
         </div>
       </div>
+      ${statsCard()}
       <div class="card">
         <h2>Backup</h2>
         <p class="faint">Progress is saved on this phone only. Save a backup before switching phones or clearing Chrome’s data.</p>
@@ -581,6 +629,36 @@
         S = defaults(); save(); tab = 'home'; render();
       }
     };
+  }
+
+  function statsCard() {
+    const t = today();
+    const weekStart = t - (new Date().getDay() + 6) % 7; // Monday
+    const days = Object.keys(S.days).map(d => [+d, S.days[d]]);
+    const studied = days.filter(([, r]) => (r.nw + r.nk + r.rv) > 0);
+    const weekStudied = studied.filter(([d]) => d >= weekStart).length;
+    const sumSec = list => list.reduce((a, [, r]) => a + (r.sec || 0), 0);
+    const st = S.stats || { sessions: 0, sec: 0, stopped: 0 };
+    const known = knownCount('w');
+    const before = days.filter(([d, r]) => d <= t - 7 && r.known != null).sort((a, b) => b[0] - a[0])[0];
+    const tapered = days.filter(([, r]) => r.ease === 'taper').length;
+    const paused = days.filter(([, r]) => r.ease === 'pause').length;
+    const row = (label, value) => `<li><span>${label}</span><span class="e">${value}</span></li>`;
+    return `
+      <div class="card">
+        <h2>Your stats</h2>
+        <p class="faint">Kept on this phone only.</p>
+        <ul class="list stats">
+          ${row('Words known', `${known}${before ? ` (+${known - before[1].known} this week)` : ''}`)}
+          ${row('Days studied', `${studied.length} (${weekStudied} this week)`)}
+          ${row('Time this week', fmtDur(sumSec(days.filter(([d]) => d >= weekStart))))}
+          ${row('Time all together', fmtDur(sumSec(days)))}
+          ${row('Average session', st.sessions ? `${fmtDur(st.sec / st.sessions)} (${plural(st.sessions, 'session', 'sessions')})` : '—')}
+          ${row('Sessions stopped partway', st.stopped)}
+          ${row('“Easing off” days', tapered)}
+          ${row('“Catch-up” days', paused)}
+        </ul>
+      </div>`;
   }
 
   function saveBackup() {
@@ -702,12 +780,14 @@
   }
   // Android back button (or exitSession) leaves a session or quick check and returns to the tabs.
   window.addEventListener('popstate', () => {
+    recordSessionEnd(false);
     session = null;
     placing = null;
     save();
     render();
   });
   function exitSession() {
+    recordSessionEnd(false); // no-op if the done screen already recorded it
     session = null;
     save();
     if (history.state && history.state.kida === 'session') history.back(); else render();
@@ -724,10 +804,11 @@
       <div class="topbar">
         <button class="x" id="quit" aria-label="Stop">✕</button>
         <div class="bar"><div style="width:${pct}%"></div></div>
-        <div class="left">${left} left</div>
+        <div class="left">${left} cards<br><b>${fmtLeft(sessionSecondsLeft(s))}</b></div>
       </div>`;
     if (step.mode === 'learn') renderLearn(top, step);
     else renderQuiz(top, step);
+    s.stepStart = Date.now();
     $app.querySelector('#quit').onclick = () => {
       if (s.done === 0 || confirm('Stop here? Everything you’ve done so far is saved.')) exitSession();
     };
@@ -742,6 +823,7 @@
       const at = Math.min(s.queue.length, s.pos + 1 + (soon ? 1 : rand(3, 5)));
       s.queue.splice(at, 0, requeueStep);
     }
+    if (s.stepStart) recordCardTime(s.queue[s.pos].mode, Date.now() - s.stepStart);
     s.pos++;
     s.done++;
     rememberLeftover();
@@ -923,11 +1005,14 @@
     const kind = s.kind;
     const more = s.countsNew && dueList(kind).length;
     const line = DONE_LINES[Math.floor(Math.random() * DONE_LINES.length)];
+    recordSessionEnd(true);
+    save();
     $app.innerHTML = `
       <div class="done-screen">
         <img src="icons/icon-192.png" alt="" width="96" height="96" style="border-radius:50%">
         <div class="headline">${esc(line)}</div>
         <p class="muted">${s.title ? esc(s.title) + ' · ' : ''}${s.done} cards done.</p>
+        <p class="done-time">This session: <b>${fmtDur(s.sec || 0)}</b> · Today: <b>${fmtDur(dayRec().sec || 0)}</b></p>
         <div class="stat-row">
           <div class="card"><div class="n">+${s.newLearned}</div><div class="faint">new</div></div>
           ${knownCount(kind)
