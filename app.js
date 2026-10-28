@@ -8,7 +8,7 @@
   const STORE_KEY = 'kida:v1';
   const INTERVALS = [0, 1, 3, 7, 14, 30, 60, 120, 240]; // days until next review, by stage
   const KNOWN_STAGE = 2;        // "known" once it's remembered on a later day
-  const MIN_QUOTA = 5, MAX_QUOTA = 20;
+  const MIN_QUOTA = 5, MAX_QUOTA = 30;
   const REVIEW_CAP = 30;        // reviews per normal session
   const EASY_CAP = 15;          // reviews per easy-mode session
   const PAUSE_FACTOR = 8;       // pause new words when due reviews > quota * this
@@ -18,8 +18,8 @@
   const TIERS = [
     { min: 5, name: '', label: 'Normal pace' },
     { min: 8, name: 'Boost', label: 'Boost' },
-    { min: 12, name: 'Aura', label: 'Aura' },
-    { min: 16, name: 'Beast Mode', label: 'Beast Mode' },
+    { min: 14, name: 'Aura', label: 'Aura' },
+    { min: 22, name: 'Beast Mode', label: 'Beast Mode' },
   ];
   const DONE_LINES = [
     'Everything in its right place.',
@@ -39,6 +39,7 @@
       items: {},      // id -> { s: stage, due: dayNumber, miss: count, seen: count }
       days: {},       // dayNumber -> { nw: new words, nk: new kanji, rv: reviews }
       placement: {},  // "year|unit" -> true once checked
+      leftover: {},   // kind -> { day, ids }: cards left when a daily session was stopped partway
       introDone: false,
     };
   }
@@ -135,23 +136,74 @@
       .sort((a, b) => S.items[a].due - S.items[b].due)
       .map(id => BY_ID.get(id));
   }
-  function plan(kind, easy) {
-    const due = dueList(kind);
-    const quota = kind === 'w' ? S.settings.quota : S.settings.kanjiPerDay;
-    const used = kind === 'w' ? dayRec().nw : dayRec().nk;
-    const paused = due.length > quota * PAUSE_FACTOR;
-    const newCount = (easy || paused) ? 0 : Math.max(0, quota - used);
+  // Cards left over from a daily session that was stopped partway. They go at the end of
+  // the next session. From the same day, new words still count toward today's quota;
+  // from an earlier day they're extra.
+  function carryOver(kind, easy) {
+    const lo = S.leftover && S.leftover[kind];
+    const empty = { news: [], reviews: [], sameDay: false };
+    if (!lo || !lo.ids || !lo.ids.length) return empty;
+    const t = today();
+    const items = lo.ids.map(id => BY_ID.get(id)).filter(Boolean);
     return {
-      reviews: due.slice(0, easy ? EASY_CAP : REVIEW_CAP),
-      news: newQueue(kind).slice(0, newCount),
-      dueTotal: due.length,
+      news: easy ? [] : items.filter(it => !S.items[it.id]),
+      reviews: items.filter(it => S.items[it.id] && S.items[it.id].due <= t),
+      sameDay: lo.day === t,
+    };
+  }
+  function plan(kind, easy) {
+    const carry = carryOver(kind, easy);
+    const carried = new Set(carry.news.concat(carry.reviews).map(it => it.id));
+    const due = dueList(kind).filter(it => !carried.has(it.id));
+    const quota = kind === 'w' ? S.settings.quota : S.settings.kanjiPerDay;
+    const used = (kind === 'w' ? dayRec().nw : dayRec().nk) + (carry.sameDay ? carry.news.length : 0);
+    // As reviews pile up, ease off new words gradually instead of cutting them off:
+    // full quota until reviews reach half the limit, then down to a quarter, then a pause.
+    const load = due.length / (quota * PAUSE_FACTOR);
+    const paused = load > 1;
+    const allowance = load <= 0.5 ? quota : Math.max(1, Math.round(quota * (1 - (load - 0.5) * 1.5)));
+    const tapered = !paused && allowance < quota;
+    const newCount = (easy || paused) ? 0 : Math.max(0, allowance - used);
+    const reviews = due.slice(0, easy ? EASY_CAP : REVIEW_CAP);
+    const news = newQueue(kind).filter(it => !carried.has(it.id)).slice(0, newCount);
+    return {
+      reviews,
+      news,
+      carry,
+      totalNew: news.length + carry.news.length,
+      totalReviews: reviews.length + carry.reviews.length,
+      moreDue: due.length - reviews.length,
       paused,
+      tapered: tapered && !easy,
+      allowance,
     };
   }
   const stageOf = it => (S.items[it.id] ? S.items[it.id].s : 0);
   const knownCount = kind => Object.keys(S.items).filter(id => BY_ID.has(id) && BY_ID.get(id).kind === kind && S.items[id].s >= KNOWN_STAGE).length;
   const learningCount = kind => Object.keys(S.items).filter(id => BY_ID.has(id) && BY_ID.get(id).kind === kind && S.items[id].s < KNOWN_STAGE).length;
-  const minutes = p => Math.max(2, Math.round(p.reviews.length * 0.15 + p.news.length * 1.1));
+  const minutes = p => Math.max(2, Math.round(p.totalReviews * 0.15 + p.totalNew * 1.1));
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  // The "Today's session" message: how many new and review cards, plus any carry-over.
+  function todayCard(p, noun) {
+    const c = p.carry.news.length + p.carry.reviews.length;
+    return `
+      <div class="card today">
+        <h3>Today’s session</h3>
+        <div class="today-counts">
+          <div><span class="n">${p.totalNew}</span>new ${noun}</div>
+          <div><span class="n">${p.totalReviews}</span>${p.totalReviews === 1 ? 'review' : 'reviews'}</div>
+          <div><span class="n">~${minutes(p)}</span>minutes</div>
+        </div>
+        ${c ? `<p class="today-note">Your last session stopped partway, so its ${[
+          p.carry.news.length ? plural(p.carry.news.length, `new ${noun === 'kanji' ? 'kanji' : 'word'}`, `new ${noun}`) : '',
+          p.carry.reviews.length ? plural(p.carry.reviews.length, 'review', 'reviews') : '',
+        ].filter(Boolean).join(' and ')} will be added at the end of today’s session.</p>` : ''}
+        ${p.paused ? `<p class="today-note"><b>Catch-up day:</b> reviews only. New ${noun} come back once you’re caught up.</p>` : ''}
+        ${p.tapered ? `<p class="today-note"><b>Easing off:</b> ${p.allowance} new today instead of ${noun === 'kanji' ? S.settings.kanjiPerDay : S.settings.quota} while you catch up on reviews. It goes back up as the reviews clear.</p>` : ''}
+        ${p.moreDue > 0 && !p.paused ? `<p class="today-note">${plural(p.moreDue, 'more review is', 'more reviews are')} waiting for a bonus round after this.</p>` : ''}
+      </div>`;
+  }
 
   // ---------------------------------------------------------------------------
   // Scheduling
@@ -338,25 +390,21 @@
     const kp = plan('k', false);
     const known = knownCount('w');
     const learning = learningCount('w');
-    const nothing = !p.reviews.length && !p.news.length;
+    const nothing = !p.totalReviews && !p.totalNew;
     const tier = tierFor(S.settings.quota);
     let startLabel;
     if (nothing) {
       startLabel = `<div class="card" style="text-align:center"><div class="big-num">✓</div><p style="margin-top:8px"><b>Done for today.</b></p><p class="muted">Come back tomorrow, or get ahead in Superunknown.</p></div>`;
     } else {
-      const bits = [];
-      if (p.news.length) bits.push(`${p.news.length} new`);
-      if (p.reviews.length) bits.push(`${p.reviews.length} review`);
-      startLabel = `<button class="btn primary" id="start">Start<small>About ${minutes(p)} min · ${bits.join(' · ')}</small></button>`;
+      startLabel = `${todayCard(p, 'words')}<button class="btn primary" id="start">Start</button>`;
     }
     const kBits = [];
-    if (kp.reviews.length) kBits.push(`${kp.reviews.length} to review`);
-    if (kp.news.length) kBits.push(`${kp.news.length} new`);
+    if (kp.totalReviews) kBits.push(`${kp.totalReviews} to review`);
+    if (kp.totalNew) kBits.push(`${kp.totalNew} new`);
     $app.innerHTML = `
       ${brand()}
-      ${p.paused ? `<div class="notice"><b>Catch-up day.</b> Reviews only today. New words come back once you’re caught up.</div>` : ''}
       ${startLabel}
-      ${p.reviews.length && !nothing ? `<button class="btn ghost" id="easy">Low-energy day? Just review (about 5 min)</button>` : ''}
+      ${p.totalReviews && !nothing ? `<button class="btn ghost" id="easy">Low-energy day? Just review (about 5 min)</button>` : ''}
       <div class="card" style="margin-top:14px">
         <div class="row between">
           <div><div class="faint">Words known</div><div class="big-num">${known}</div></div>
@@ -373,14 +421,12 @@
     const ez = $app.querySelector('#easy');
     if (ez) ez.onclick = () => startSession('w', true);
     $app.querySelector('#to-kanji').onclick = () => { tab = 'kanji'; render(); };
+    checkMilestones(); // e.g. after the quick check marks a batch of words known
   }
 
   function renderKanji() {
     const p = plan('k', false);
-    const nothing = !p.reviews.length && !p.news.length;
-    const bits = [];
-    if (p.news.length) bits.push(`${p.news.length} new`);
-    if (p.reviews.length) bits.push(`${p.reviews.length} review`);
+    const nothing = !p.totalReviews && !p.totalNew;
     const groups = [
       { title: 'Japanese 3', list: KANJI.filter(k => k.y === 3) },
       { title: 'Japanese 2', list: KANJI.filter(k => k.y === 2) },
@@ -394,7 +440,7 @@
       <h1>OK Kanji</h1>
       <p class="muted">${S.settings.kanjiWrite ? 'Writing practice is on: you’ll write some kanji on paper, then check.' : 'Meanings and readings. Turn on writing practice in Settings.'}</p>
       ${nothing ? `<div class="card" style="text-align:center"><b>All caught up on kanji.</b></div>`
-        : `<button class="btn primary" id="kstart">Start kanji<small>About ${minutes(p)} min · ${bits.join(' · ')}</small></button>`}
+        : `${todayCard(p, 'kanji')}<button class="btn primary" id="kstart">Start kanji</button>`}
       <div class="legend"><span><i></i>Not yet</span><span><i style="background:var(--surface-2)"></i>Learning</span><span><i style="background:var(--ice)"></i>Known</span></div>
       ${groups.map(g => `<div class="card"><h3>${g.title}</h3><div class="kgrid">${g.list.map(tile).join('')}</div></div>`).join('')}`;
     const ks = $app.querySelector('#kstart');
@@ -563,7 +609,8 @@
     }).catch(() => alert('That file isn’t a Kid あ backup.'));
   }
 
-  function beastQuake() {
+  // Seismograph + shake. Used for maxing the slider and for word-count milestones.
+  function beastQuake(opts = {}) {
     const pts = [];
     for (let x = 0; x <= 480; x += 6) {
       const amp = x < 90 ? 3 : x < 330 ? 48 * Math.sin((x - 90) / 240 * Math.PI) : 4;
@@ -571,17 +618,39 @@
     }
     const $qk = document.getElementById('quake');
     $qk.innerHTML = `
-      <div class="title">BEAST QUAKE</div>
+      ${opts.big ? `<div class="milestone">${esc(opts.big)}</div>` : ''}
+      <div class="title">${esc(opts.title || 'BEAST QUAKE')}</div>
       <svg viewBox="0 0 480 120" aria-hidden="true"><polyline points="${pts.join(' ')}"/></svg>
-      <div class="sub">20 words a day. Max setting.</div>
+      <div class="sub">${esc(opts.sub || `${MAX_QUOTA} words a day. Max setting.`)}</div>
+      ${opts.bounty ? `<div class="bounty">Go claim your bounty!</div>` : ''}
       <div class="faint" style="margin-top:18px">tap to close</div>`;
     $qk.hidden = false;
     document.body.classList.add('shaking');
-    if (navigator.vibrate) navigator.vibrate([60, 40, 90, 40, 140, 40, 220]);
+    if (navigator.vibrate) navigator.vibrate([60, 40, 90, 40, 140, 40, 220, 60, 300]);
     const close = () => { $qk.hidden = true; document.body.classList.remove('shaking'); };
     $qk.onclick = close;
     setTimeout(() => document.body.classList.remove('shaking'), 900);
-    setTimeout(close, 3200);
+    if (!opts.stay) setTimeout(close, 3200);
+  }
+
+  // Word-count milestones. Each one celebrates once; 100, 200 and 300 come with a bounty.
+  const MILESTONES = [100, 200, 250, 300, 350];
+  const BOUNTY = [100, 200, 300];
+  function checkMilestones() {
+    if (!S.milestones) S.milestones = [];
+    const known = knownCount('w');
+    const hit = MILESTONES.filter(m => known >= m && !S.milestones.includes(m));
+    if (!hit.length) return;
+    S.milestones.push(...hit);
+    save();
+    const top = hit[hit.length - 1];
+    beastQuake({
+      big: String(top),
+      title: 'WORDS KNOWN',
+      sub: top === MILESTONES[MILESTONES.length - 1] ? 'Beast Mode, for real.' : 'That’s a Beast Quake.',
+      bounty: hit.some(m => BOUNTY.includes(m)),
+      stay: true,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -597,7 +666,26 @@
       const at = Math.min(queue.length, 2 + Math.round((i + 1) * reviews.length / (p.news.length + 1)) + i * 2);
       queue.splice(at, 0, { item, mode: 'learn', isNew: true });
     });
-    beginSession({ kind, queue, title: kind === 'k' ? 'OK Kanji' : '', countsNew: true });
+    // Leftovers from a session stopped partway go at the end. From an earlier day they're extra.
+    for (const item of p.carry.reviews) queue.push({ item, mode: 'quiz' });
+    for (const item of p.carry.news) queue.push({ item, mode: 'learn', isNew: true, extra: !p.carry.sameDay });
+    beginSession({ kind, queue, title: kind === 'k' ? 'OK Kanji' : '', countsNew: true, daily: true });
+  }
+
+  // Remembers what's left of a daily session after every card, so it survives the app
+  // being swiped away mid-session.
+  function rememberLeftover() {
+    const s = session;
+    if (!s || !s.daily) return;
+    const ids = [];
+    for (const st of s.queue.slice(s.pos)) {
+      if (st.graded) continue;                                   // already answered
+      if (st.mode === 'learn' && S.items[st.item.id]) continue;  // already introduced
+      if (!ids.includes(st.item.id)) ids.push(st.item.id);
+    }
+    if (!S.leftover) S.leftover = {};
+    if (ids.length) S.leftover[s.kind] = { day: today(), ids };
+    else delete S.leftover[s.kind];
   }
   function startCustom(words, title) {
     const learn = words.filter(w => !S.items[w.id]).map(item => ({ item, mode: 'learn', isNew: true }));
@@ -607,6 +695,8 @@
   function beginSession(opts) {
     if (!opts.queue.length) { render(); return; }
     session = Object.assign({ pos: 0, total: opts.queue.length, done: 0, newLearned: 0, reviewed: 0, misses: 0 }, opts);
+    rememberLeftover();
+    save();
     history.pushState({ kida: 'session' }, '');
     renderSession();
   }
@@ -654,6 +744,7 @@
     }
     s.pos++;
     s.done++;
+    rememberLeftover();
     save();
     renderSession();
   }
@@ -692,7 +783,7 @@
     if (S.settings.autoplay) it.kind === 'k' ? (it.ex[0] && speak(it.ex[0].r)) : sayWord(it);
     $app.querySelector('#got').onclick = () => {
       if (!S.items[it.id]) {
-        introduce(it, session.countsNew);
+        introduce(it, session.countsNew && !step.extra);
         session.newLearned++;
       }
       advance({ item: it, mode: 'quiz', isNew: true, graded: true }, true);
@@ -847,6 +938,7 @@
         ${more ? `<button class="btn ghost" id="more">Bonus round (${Math.min(more, REVIEW_CAP)} more reviews)</button>` : ''}
       </div>`;
     $app.querySelector('#home').onclick = exitSession;
+    if (kind === 'w') checkMilestones();
     const m = $app.querySelector('#more');
     if (m) m.onclick = () => {
       const p = plan(kind, false);
