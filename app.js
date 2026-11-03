@@ -163,10 +163,17 @@
     const paused = load > 1;
     const allowance = load <= 0.5 ? quota : Math.max(1, Math.round(quota * (1 - (load - 0.5) * 1.5)));
     const tapered = !paused && allowance < quota;
-    const newCount = (easy || paused) ? 0 : Math.max(0, allowance - used);
+    // Each extra session he starts today unlocks another batch of new words.
+    const sessionsToday = 1 + (dayRec()[kind === 'w' ? 'xw' : 'xk'] || 0);
+    const newCount = (easy || paused) ? 0 : Math.max(0, allowance * sessionsToday - used);
     const reviews = due.slice(0, easy ? EASY_CAP : REVIEW_CAP);
-    const news = newQueue(kind).filter(it => !carried.has(it.id)).slice(0, newCount);
+    const fresh = newQueue(kind).filter(it => !carried.has(it.id));
+    const news = fresh.slice(0, newCount);
     return {
+      sessionsToday,
+      // Another session is possible once this one is done, if there are new words left to give.
+      canAnother: !paused && fresh.length > news.length,
+      anotherSize: Math.min(allowance, fresh.length - news.length),
       reviews,
       news,
       carry,
@@ -233,7 +240,7 @@
     const c = p.carry.news.length + p.carry.reviews.length;
     return `
       <div class="card today">
-        <h3>Today’s session</h3>
+        <h3>${p.sessionsToday > 1 ? `Today’s session ${p.sessionsToday}` : 'Today’s session'}</h3>
         <div class="today-counts">
           <div><span class="n">${p.totalNew}</span>new ${noun}</div>
           <div><span class="n">${p.totalReviews}</span>${p.totalReviews === 1 ? 'review' : 'reviews'}</div>
@@ -407,7 +414,7 @@
       <p class="muted">A few minutes a day on the Japanese 1–3 vocab and kanji from class. Here’s how it works:</p>
       <div class="card stack">
         <div><b>Tap Start.</b> That’s it. The app picks what to study.</div>
-        <div><b>A few new words a day.</b> You choose how many (5 is the minimum).</div>
+        <div><b>A few new words at a time.</b> You choose how many per session (5 is the minimum), and you can do more than one session a day.</div>
         <div><b>Words come back right before you’d forget them.</b> That’s how they stick.</div>
       </div>
       <div class="card">
@@ -441,7 +448,7 @@
     const tier = tierFor(S.settings.quota);
     let startLabel;
     if (nothing) {
-      startLabel = `<div class="card" style="text-align:center"><div class="big-num">✓</div><p style="margin-top:8px"><b>Done for today.</b></p><p class="muted">Come back tomorrow, or get ahead in Superunknown.</p></div>`;
+      startLabel = doneCard(p, 'w');
     } else {
       startLabel = `${todayCard(p, 'words')}<button class="btn primary" id="start">Start</button>`;
     }
@@ -462,9 +469,11 @@
       <button class="card btn" id="to-kanji" style="text-align:left">
         <div class="row between"><div><b>OK Kanji</b><div class="faint">${kBits.length ? kBits.join(' · ') : 'All caught up'}</div></div><span class="jp" style="font-size:30px">字</span></div>
       </button>
-      <p class="faint" style="text-align:center">${tier.name ? `${esc(tier.name)} · ` : ''}${S.settings.quota} new words a day · change in Settings</p>`;
+      <p class="faint" style="text-align:center">${tier.name ? `${esc(tier.name)} · ` : ''}${S.settings.quota} new words a session · change in Settings</p>`;
     const st = $app.querySelector('#start');
     if (st) st.onclick = () => startSession('w', false);
+    const an = $app.querySelector('#another');
+    if (an) an.onclick = () => startAnother('w', false);
     const ez = $app.querySelector('#easy');
     if (ez) ez.onclick = () => startSession('w', true);
     $app.querySelector('#to-kanji').onclick = () => { tab = 'kanji'; render(); };
@@ -486,12 +495,14 @@
     $app.innerHTML = `
       <h1>OK Kanji</h1>
       <p class="muted">${S.settings.kanjiWrite ? 'Writing practice is on: you’ll write some kanji on paper, then check.' : 'Meanings and readings. Turn on writing practice in Settings.'}</p>
-      ${nothing ? `<div class="card" style="text-align:center"><b>All caught up on kanji.</b></div>`
+      ${nothing ? doneCard(p, 'k')
         : `${todayCard(p, 'kanji')}<button class="btn primary" id="kstart">Start kanji</button>`}
       <div class="legend"><span><i></i>Not yet</span><span><i style="background:var(--surface-2)"></i>Learning</span><span><i style="background:var(--ice)"></i>Known</span></div>
       ${groups.map(g => `<div class="card"><h3>${g.title}</h3><div class="kgrid">${g.list.map(tile).join('')}</div></div>`).join('')}`;
     const ks = $app.querySelector('#kstart');
     if (ks) ks.onclick = () => startSession('k', false);
+    const ka = $app.querySelector('#kanother');
+    if (ka) ka.onclick = () => startAnother('k', false);
     $app.querySelectorAll('.ktile').forEach(b => b.onclick = () => showKanjiSheet(BY_ID.get(b.dataset.id)));
   }
 
@@ -564,12 +575,12 @@
       <h1>Settings</h1>
       <div class="card">
         <div class="setting">
-          <div class="slider-head"><label for="quota">New words per day</label><span class="slider-val" id="qv">${q}</span></div>
+          <div class="slider-head"><label for="quota">New words per session</label><span class="slider-val" id="qv">${q}</span></div>
           <input type="range" id="quota" min="${MIN_QUOTA}" max="${MAX_QUOTA}" step="1" value="${q}">
-          <div class="row between"><span class="tier ${tier.name === 'Beast Mode' ? 'beast' : ''}" id="qt">${esc(tier.label)}</span><span class="muted" id="qm">about ${tierMinutes(q)} min a day</span></div>
+          <div class="row between"><span class="tier ${tier.name === 'Beast Mode' ? 'beast' : ''}" id="qt">${esc(tier.label)}</span><span class="muted" id="qm">about ${tierMinutes(q)} min a session</span></div>
         </div>
         <div class="setting">
-          <label>New kanji per day</label>
+          <label>New kanji per session</label>
           <div class="seg" id="kpd">${[1, 2, 3].map(n => `<button data-n="${n}" class="${S.settings.kanjiPerDay === n ? 'on' : ''}">${n}</button>`).join('')}</div>
         </div>
         <div class="setting">
@@ -609,7 +620,7 @@
       const $t = $app.querySelector('#qt');
       $t.textContent = t.label;
       $t.classList.toggle('beast', t.name === 'Beast Mode');
-      $app.querySelector('#qm').textContent = `about ${tierMinutes(v)} min a day`;
+      $app.querySelector('#qm').textContent = `about ${tierMinutes(v)} min a session`;
       if (v === MAX_QUOTA && !wasMax) beastQuake();
       wasMax = v === MAX_QUOTA;
     };
@@ -699,7 +710,7 @@
       ${opts.big ? `<div class="milestone">${esc(opts.big)}</div>` : ''}
       <div class="title">${esc(opts.title || 'BEAST QUAKE')}</div>
       <svg viewBox="0 0 480 120" aria-hidden="true"><polyline points="${pts.join(' ')}"/></svg>
-      <div class="sub">${esc(opts.sub || `${MAX_QUOTA} words a day. Max setting.`)}</div>
+      <div class="sub">${esc(opts.sub || `${MAX_QUOTA} words a session. Max setting.`)}</div>
       ${opts.bounty ? `<div class="bounty">Go claim your bounty!</div>` : ''}
       <div class="faint" style="margin-top:18px">tap to close</div>`;
     $qk.hidden = false;
@@ -736,6 +747,18 @@
   // ---------------------------------------------------------------------------
   // A session is a queue of steps: { item, mode: 'learn' | 'quiz', isNew, graded }.
   function startSession(kind, easy) {
+    beginSession(dailySession(kind, easy));
+  }
+  // Unlocks another batch of new words for today and starts it. From the done screen the
+  // new session replaces the finished one instead of adding a history entry.
+  function startAnother(kind, fromDone) {
+    const key = kind === 'w' ? 'xw' : 'xk';
+    dayRec()[key] = (dayRec()[key] || 0) + 1;
+    save();
+    if (fromDone) { session = null; beginSessionReplace(dailySession(kind, false)); }
+    else beginSession(dailySession(kind, false));
+  }
+  function dailySession(kind, easy) {
     const p = plan(kind, easy);
     const reviews = shuffle(p.reviews.slice()).map(item => ({ item, mode: 'quiz' }));
     const queue = reviews.slice();
@@ -747,7 +770,23 @@
     // Leftovers from a session stopped partway go at the end. From an earlier day they're extra.
     for (const item of p.carry.reviews) queue.push({ item, mode: 'quiz' });
     for (const item of p.carry.news) queue.push({ item, mode: 'learn', isNew: true, extra: !p.carry.sameDay });
-    beginSession({ kind, queue, title: kind === 'k' ? 'OK Kanji' : '', countsNew: true, daily: true });
+    const title = [kind === 'k' ? 'OK Kanji' : '', p.sessionsToday > 1 ? `Session ${p.sessionsToday}` : ''].filter(Boolean).join(' · ');
+    return { kind, queue, title, countsNew: true, daily: true };
+  }
+
+  // "Done for today" card, with the option to keep going.
+  function doneCard(p, kind) {
+    const noun = kind === 'k' ? 'kanji' : 'words';
+    const another = p.canAnother
+      ? `<button class="btn primary" id="${kind === 'k' ? 'kanother' : 'another'}" style="margin-top:14px">Start another session<small>+${p.anotherSize} new ${noun} · about ${minutes({ totalNew: p.anotherSize, totalReviews: 0 })} min</small></button>`
+      : '';
+    return `
+      <div class="card" style="text-align:center">
+        <div class="big-num">✓</div>
+        <p style="margin-top:8px"><b>${kind === 'k' ? 'Kanji done for today.' : 'Done for today.'}</b></p>
+        <p class="muted">${p.canAnother ? 'Want more? You can keep going.' : 'Come back tomorrow.'}</p>
+        ${another}
+      </div>`;
   }
 
   // Remembers what's left of a daily session after every card, so it survives the app
@@ -1007,6 +1046,8 @@
     const line = DONE_LINES[Math.floor(Math.random() * DONE_LINES.length)];
     recordSessionEnd(true);
     save();
+    const p = plan(kind, false);
+    const nextUp = s.daily && !p.totalNew && p.canAnother; // today's new words are all done
     $app.innerHTML = `
       <div class="done-screen">
         <img src="icons/icon-192.png" alt="" width="96" height="96" style="border-radius:50%">
@@ -1020,13 +1061,15 @@
             : `<div class="card"><div class="n">${learningCount(kind)}</div><div class="faint">in progress</div></div>`}
         </div>
         <button class="btn primary" id="home">Done</button>
+        ${nextUp ? `<button class="btn" id="another">Another session (+${p.anotherSize} new ${kind === 'k' ? 'kanji' : 'words'})</button>` : ''}
         ${more ? `<button class="btn ghost" id="more">Bonus round (${Math.min(more, REVIEW_CAP)} more reviews)</button>` : ''}
       </div>`;
     $app.querySelector('#home').onclick = exitSession;
+    const an = $app.querySelector('#another');
+    if (an) an.onclick = () => startAnother(kind, true);
     if (kind === 'w') checkMilestones();
     const m = $app.querySelector('#more');
     if (m) m.onclick = () => {
-      const p = plan(kind, false);
       session = null;
       beginSessionReplace({ kind, queue: shuffle(p.reviews.slice()).map(item => ({ item, mode: 'quiz' })), title: 'Bonus round', countsNew: true });
     };
@@ -1034,6 +1077,8 @@
   function beginSessionReplace(opts) {
     if (!opts.queue.length) { exitSession(); return; }
     session = Object.assign({ pos: 0, total: opts.queue.length, done: 0, newLearned: 0, reviewed: 0, misses: 0 }, opts);
+    rememberLeftover();
+    save();
     renderSession();
   }
 

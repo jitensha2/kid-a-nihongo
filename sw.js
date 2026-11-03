@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION whenever app files change so phones pick up the update.
-const VERSION = 'kida-2026-10-28-2';
+const VERSION = 'kida-2026-11-03-1';
 const FILES = [
   './',
   'index.html',
