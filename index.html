@@ -14,13 +14,17 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <header id="top" class="top" hidden>
+    <div class="brand"><img src="icons/icon-192.png" alt=""><div class="name">Kid <span class="jp">あ</span></div></div>
+    <nav id="nav" class="nav">
+      <button data-tab="home"><span class="nav-ico">あ</span>Home</button>
+      <button data-tab="kanji"><span class="nav-ico">字</span>OK Kanji</button>
+      <button data-tab="unknown"><span class="nav-ico">？</span>Superunknown</button>
+      <button data-tab="build"><span class="nav-ico">文</span>Build</button>
+      <button data-tab="settings"><span class="nav-ico">⚙</span>Settings</button>
+    </nav>
+  </header>
   <main id="app" aria-live="polite"></main>
-  <nav id="nav" class="nav" hidden>
-    <button data-tab="home"><span class="nav-ico">あ</span>Home</button>
-    <button data-tab="kanji"><span class="nav-ico">字</span>OK Kanji</button>
-    <button data-tab="unknown"><span class="nav-ico">？</span>Superunknown</button>
-    <button data-tab="settings"><span class="nav-ico">⚙</span>Settings</button>
-  </nav>
   <div id="quake" class="quake" hidden></div>
   <script src="data.js"></script>
   <script src="build.js"></script>

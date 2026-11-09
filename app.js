@@ -403,7 +403,7 @@
   let session = null;
 
   function setNav(visible) {
-    $nav.hidden = !visible;
+    document.getElementById('top').hidden = !visible;
     document.body.classList.toggle('in-session', !visible);
     $nav.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   }
@@ -420,7 +420,7 @@
     if (building) return renderBuild();
     if (!S.introDone) return renderIntro();
     setNav(true);
-    ({ home: renderHome, kanji: renderKanji, unknown: renderUnknown, settings: renderSettings })[tab]();
+    ({ home: renderHome, kanji: renderKanji, unknown: renderUnknown, build: renderBuildTab, settings: renderSettings })[tab]();
   }
 
   function brand() {
@@ -492,7 +492,6 @@
     if (kp.totalReviews) kBits.push(`${kp.totalReviews} to review`);
     if (kp.totalNew) kBits.push(`${kp.totalNew} new`);
     $app.innerHTML = `
-      ${brand()}
       ${startLabel}
       ${p.totalReviews && !nothing ? `<button class="btn ghost" id="easy">Low-energy day? Just review (about 5 min)</button>` : ''}
       <div class="card" style="margin-top:14px">
@@ -516,7 +515,7 @@
     const ez = $app.querySelector('#easy');
     if (ez) ez.onclick = () => startSession('w', true);
     $app.querySelector('#to-kanji').onclick = () => { tab = 'kanji'; render(); };
-    $app.querySelector('#to-build').onclick = startBuild;
+    $app.querySelector('#to-build').onclick = () => { tab = 'build'; render(); };
     checkMilestones(); // e.g. after the quick check marks a batch of words known
   }
 
@@ -1145,6 +1144,33 @@
     }
     return pick;
   }
+  // The Build tab: start a round, and replay sentences he's built before.
+  function renderBuildTab() {
+    const last = S.built || {};
+    const recent = BUILDS.filter(b => last[b.id]).sort((a, b) => last[b.id] - last[a.id]).slice(0, 10);
+    const steps = pickBuilds().reduce((a, l) => a + l.s.length, 0);
+    const mins = Math.max(2, Math.round(steps * 25 / 60));
+    $app.innerHTML = `
+      <h1>Build</h1>
+      <p class="muted">A word grows into a full sentence, one step at a time. Listen, say it out loud, then see what it means.</p>
+      <button class="btn primary" id="bstart">Start building<small>${BUILD_ROUND} sentences · about ${mins} min</small></button>
+      <div class="card" style="margin-top:14px">
+        <div class="row between"><div><div class="faint">Sentences built</div><div class="big-num">${Object.keys(last).length}</div></div>
+        <div style="text-align:right"><div class="faint">To build</div><div style="font-size:24px;font-weight:800">${BUILDS.length - Object.keys(last).length}</div></div></div>
+      </div>
+      ${recent.length ? `
+        <div class="card">
+          <h2>Recently built</h2>
+          <p class="faint">Tap one to hear it.</p>
+          ${recent.map(b => { const s = b.s[b.s.length - 1]; return `
+            <button class="ex built" data-i="${esc(s[3] || s[0])}">
+              <span><span class="w">${esc(s[0])}</span><span class="r">${esc(s[2])}</span></span>
+            </button>`; }).join('')}
+        </div>` : ''}`;
+    $app.querySelector('#bstart').onclick = startBuild;
+    $app.querySelectorAll('.built').forEach(el => el.onclick = () => speakSeq(el.dataset.i, [0.95]));
+  }
+
   function startBuild() {
     building = { list: pickBuilds(), li: 0, si: 0, revealed: false, showText: false, done: 0 };
     if (!building.list.length) { building = null; return; }

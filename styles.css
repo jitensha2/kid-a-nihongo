@@ -26,9 +26,9 @@ body {
 main {
   max-width: 520px;
   margin: 0 auto;
-  padding: calc(16px + env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom));
+  padding: 16px 16px calc(32px + env(safe-area-inset-bottom));
 }
-body.in-session main { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+body.in-session main { padding-top: calc(16px + env(safe-area-inset-top)); }
 h1, h2, h3 { margin: 0 0 8px; font-weight: 700; line-height: 1.25; }
 h1 { font-size: 26px; }
 h2 { font-size: 20px; }
@@ -89,22 +89,26 @@ button { font: inherit; color: inherit; }
 .week i.on { background: var(--ice); border-color: var(--ice); }
 .week i.today { border-color: var(--text); }
 
-/* ---------- bottom nav ---------- */
-.nav {
-  position: fixed; left: 0; right: 0; bottom: 0;
-  display: flex; justify-content: center;
-  background: rgba(28, 17, 8, .96);
-  border-top: 1px solid var(--line);
-  padding-bottom: env(safe-area-inset-bottom);
-  z-index: 10;
+/* ---------- top header + tabs (kept at the top, clear of anything the browser adds at the bottom) ---------- */
+.top {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(28, 17, 8, .97);
+  border-bottom: 1px solid var(--line);
+  padding-top: env(safe-area-inset-top);
 }
-.nav[hidden] { display: none; }
+.top[hidden] { display: none; }
+.top .brand { max-width: 520px; margin: 0 auto; padding: 10px 16px 4px; }
+.top .brand img { width: 36px; height: 36px; }
+.top .brand .name { font-size: 21px; }
+.nav { display: flex; justify-content: center; max-width: 520px; margin: 0 auto; padding: 0 4px; }
 .nav button {
-  flex: 1; max-width: 130px;
-  background: none; border: 0; padding: 8px 4px 10px;
-  font-size: 12px; color: var(--faint); cursor: pointer;
+  flex: 1 1 auto; min-width: 0; /* sized to each label so "Superunknown" fits */
+  background: none; border: 0; border-bottom: 3px solid transparent;
+  padding: 6px 2px 7px;
+  font-size: 11.5px; color: var(--faint); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.nav button.on { color: var(--text); }
+.nav button.on { color: var(--text); border-bottom-color: var(--ice); }
 .nav-ico { display: block; font-family: var(--jp); font-size: 20px; line-height: 1.3; }
 
 /* ---------- session ---------- */
