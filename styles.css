@@ -167,6 +167,19 @@ button { font: inherit; color: inherit; }
 .ex .e { margin-left: auto; color: var(--muted); font-size: 14px; text-align: right; }
 .sentence { font-family: var(--jp); font-size: 18px; margin-top: 14px; }
 
+/* ---------- Build ---------- */
+.ladder { list-style: none; margin: 0 0 4px; padding: 0; text-align: center; }
+.ladder li { font-size: 18px; color: var(--faint); padding: 2px 0; }
+.ladder li::after { content: '↓'; display: block; font-size: 13px; color: var(--line); }
+.speeds { display: flex; gap: 10px; justify-content: center; margin-top: 12px; }
+.speeds .btn { width: auto; min-height: 40px; padding: 8px 18px; margin: 0; font-size: 15px; }
+.reveal .jp-big { font-size: 30px; }
+.reveal .meaning { font-size: 20px; }
+.ex.built { display: block; }
+.ex.built > span { display: flex; flex-direction: column; gap: 4px; }
+.ex.built .w { font-size: 18px; }
+.ex.built .r { font-family: inherit; }
+
 .done-screen { text-align: center; padding-top: 24px; }
 .done-screen .headline { font-size: 34px; font-weight: 800; margin: 16px 0 6px; }
 .stat-row { display: flex; gap: 10px; margin: 20px 0; }

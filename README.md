@@ -6,6 +6,8 @@ Progress is stored only on the phone (localStorage); nothing is sent anywhere.
 ## Files
 - `index.html`, `styles.css`, `app.js`: the app
 - `data.js`: word and kanji lists, generated from the spreadsheet (don't edit by hand)
+- `build.js`: hand-written "Build" ladders (word → phrase → sentence), using only class vocab
+  and grammar the class has covered. Add new ladders here as new units are taught.
 - `sw.js`, `manifest.webmanifest`, `icons/`: offline support and home-screen install
 - `tools/`: scripts for updating the data, rendering icons, and local testing
 

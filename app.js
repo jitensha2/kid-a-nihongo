@@ -104,6 +104,17 @@
   for (const w of WORDS) w.verb = /^\(?(to|gives?)\s/i.test(w.en) || /ています$/.test(w.jp);
   const VERB_INTERVAL = 0.6;
 
+  // Build ladders (build.js), each linked to the vocab word it's built around.
+  const BUILDS = (() => {
+    const byKey = new Map(WORDS.map(w => [norm(w.r || w.jp), w]));
+    return (window.KIDA_BUILD || []).map(b => {
+      const k = norm(b.k);
+      const word = byKey.get(k) || WORDS.find(w => norm(w.jp) === k) ||
+        WORDS.find(w => norm(w.jp).startsWith(k) || norm(w.r).startsWith(k));
+      return Object.assign({ id: b.k, word }, b);
+    }).filter(b => b.word);
+  })();
+
   const KANJI = DATA.kanji.map(k => Object.assign({ kind: 'k' }, k));
   KANJI.forEach(k => BY_ID.set(k.id, k));
 
@@ -332,6 +343,30 @@
   }
   const sayWord = w => speak(w.r || w.jp);
 
+  // Plays a phrase at each rate in turn (e.g. slow, then normal), with a short gap between.
+  // Text is spoken as written, so full sentences keep their punctuation and pauses.
+  let seqToken = 0;
+  function speakSeq(text, rates) {
+    if (!canSpeak || !text) return;
+    if (!jaVoice) pickVoice();
+    const token = ++seqToken;
+    let i = 0;
+    const next = () => {
+      if (token !== seqToken || i >= rates.length) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'ja-JP';
+      if (jaVoice) u.voice = jaVoice;
+      u.rate = rates[i++];
+      u.onend = () => setTimeout(next, 450);
+      currentUtterance = u;
+      speechSynthesis.speak(u);
+      if (speechSynthesis.paused) speechSynthesis.resume();
+    };
+    if (speechSynthesis.speaking || speechSynthesis.pending) { speechSynthesis.cancel(); setTimeout(next, 120); }
+    else next();
+  }
+  const stopSpeech = () => { seqToken++; if (canSpeak) speechSynthesis.cancel(); };
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -382,6 +417,7 @@
 
   function render() {
     if (session) return renderSession();
+    if (building) return renderBuild();
     if (!S.introDone) return renderIntro();
     setNav(true);
     ({ home: renderHome, kanji: renderKanji, unknown: renderUnknown, settings: renderSettings })[tab]();
@@ -399,7 +435,7 @@
     for (let i = 0; i < 7; i++) {
       const d = t - dow + i;
       const r = S.days[d];
-      const on = r && (r.nw + r.nk + r.rv) > 0;
+      const on = r && (r.nw + r.nk + r.rv + (r.bd || 0)) > 0;
       html += `<span><i class="${on ? 'on' : ''} ${d === t ? 'today' : ''}"></i>${names[i]}</span>`;
     }
     return html + '</div>';
@@ -469,6 +505,9 @@
       <button class="card btn" id="to-kanji" style="text-align:left">
         <div class="row between"><div><b>OK Kanji</b><div class="faint">${kBits.length ? kBits.join(' · ') : 'All caught up'}</div></div><span class="jp" style="font-size:30px">字</span></div>
       </button>
+      <button class="card btn" id="to-build" style="text-align:left">
+        <div class="row between"><div><b>Build</b><div class="faint">Hear a word grow into a sentence, and say it</div></div><span class="jp" style="font-size:30px">文</span></div>
+      </button>
       <p class="faint" style="text-align:center">${tier.name ? `${esc(tier.name)} · ` : ''}${S.settings.quota} new words a session · change in Settings</p>`;
     const st = $app.querySelector('#start');
     if (st) st.onclick = () => startSession('w', false);
@@ -477,6 +516,7 @@
     const ez = $app.querySelector('#easy');
     if (ez) ez.onclick = () => startSession('w', true);
     $app.querySelector('#to-kanji').onclick = () => { tab = 'kanji'; render(); };
+    $app.querySelector('#to-build').onclick = startBuild;
     checkMilestones(); // e.g. after the quick check marks a batch of words known
   }
 
@@ -646,7 +686,7 @@
     const t = today();
     const weekStart = t - (new Date().getDay() + 6) % 7; // Monday
     const days = Object.keys(S.days).map(d => [+d, S.days[d]]);
-    const studied = days.filter(([, r]) => (r.nw + r.nk + r.rv) > 0);
+    const studied = days.filter(([, r]) => (r.nw + r.nk + r.rv + (r.bd || 0)) > 0);
     const weekStudied = studied.filter(([d]) => d >= weekStart).length;
     const sumSec = list => list.reduce((a, [, r]) => a + (r.sec || 0), 0);
     const st = S.stats || { sessions: 0, sec: 0, stopped: 0 };
@@ -822,6 +862,7 @@
     recordSessionEnd(false);
     session = null;
     placing = null;
+    if (building) { stopSpeech(); building = null; }
     save();
     render();
   });
@@ -1080,6 +1121,152 @@
     rememberLeftover();
     save();
     renderSession();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build: a word grows into a sentence. Each step plays slowly, then at normal speed;
+  // he says it out loud, then the Japanese and the English are revealed.
+  // ---------------------------------------------------------------------------
+  const BUILD_ROUND = 5;
+  let building = null; // { list, li (ladder), si (step), revealed, showText, stepStart }
+
+  // Words he has already learned come first, least recently built first, weakest first.
+  // If he hasn't learned enough yet, fill in from the current Japanese 3 unit.
+  function pickBuilds() {
+    const last = S.built || {};
+    const byLast = (a, b) => (last[a.id] || 0) - (last[b.id] || 0);
+    const learned = shuffle(BUILDS.filter(b => S.items[b.word.id]))
+      .sort((a, b) => byLast(a, b) || stageOf(a.word) - stageOf(b.word));
+    let pick = learned.slice(0, BUILD_ROUND);
+    if (pick.length < BUILD_ROUND) {
+      const rest = shuffle(BUILDS.filter(b => !pick.includes(b)))
+        .sort((a, b) => wordRank(a.word) - wordRank(b.word) || byLast(a, b));
+      pick = pick.concat(rest.slice(0, BUILD_ROUND - pick.length));
+    }
+    return pick;
+  }
+  function startBuild() {
+    building = { list: pickBuilds(), li: 0, si: 0, revealed: false, showText: false, done: 0 };
+    if (!building.list.length) { building = null; return; }
+    history.pushState({ kida: 'session' }, '');
+    renderBuild();
+  }
+  function leaveBuild() {
+    stopSpeech();
+    building = null;
+    save();
+    if (history.state && history.state.kida === 'session') history.back(); else render();
+  }
+  function buildStepTime() {
+    if (!building || !building.stepStart) return;
+    const sec = Math.min((Date.now() - building.stepStart) / 1000, CARD_TIME_CAP);
+    const d = dayRec();
+    d.sec = (d.sec || 0) + sec;
+  }
+
+  function renderBuild() {
+    setNav(false);
+    const b = building;
+    if (b.li >= b.list.length) return renderBuildDone();
+    const lad = b.list[b.li];
+    const step = lad.s[b.si];
+    const [jp, reading, en, say] = step;
+    const last = b.si === lad.s.length - 1;
+    const label = b.si === 0 ? 'Word' : last ? 'Sentence' : 'Phrase';
+    const totalSteps = b.list.reduce((a, l) => a + l.s.length, 0);
+    const doneSteps = b.list.slice(0, b.li).reduce((a, l) => a + l.s.length, 0) + b.si;
+    const pct = Math.round(100 * doneSteps / totalSteps);
+    const textBlock = `<div class="jp-big jp">${esc(jp)}</div>${reading !== jp ? `<div class="reading">${esc(reading)}</div>` : ''}`;
+    $app.innerHTML = `
+      <div class="topbar">
+        <button class="x" id="quit" aria-label="Stop">✕</button>
+        <div class="bar"><div style="width:${pct}%"></div></div>
+        <div class="left">Build<br><b>${b.li + 1} of ${b.list.length}</b></div>
+      </div>
+      ${b.si ? `<ol class="ladder">${lad.s.slice(0, b.si).map(s => `<li class="jp">${esc(s[0])}</li>`).join('')}</ol>` : ''}
+      <div class="prompt">
+        <div class="tag pill">${label} · step ${b.si + 1} of ${lad.s.length}</div>
+        <div><button class="speak huge" id="play" aria-label="Play again">🔊</button></div>
+        <div class="speeds"><button class="btn ghost" id="slow">Slow</button><button class="btn ghost" id="normal">Normal</button></div>
+        ${b.revealed ? '' : `<p class="hint">Listen, then say it out loud.</p>`}
+      </div>
+      ${b.revealed ? `
+        <div class="card learn reveal">
+          ${textBlock}
+          <div class="meaning">${esc(en)}</div>
+        </div>
+        <button class="btn primary" id="next">${last ? (b.li === b.list.length - 1 ? 'Finish' : 'Next sentence') : 'Next step'}</button>`
+      : `
+        ${b.showText ? `<div class="card learn">${textBlock}</div>` : `<button class="link" id="show" style="display:block;margin:0 auto 12px">Show the Japanese</button>`}
+        <button class="btn primary" id="said">I said it</button>`}`;
+
+    const voice = say || jp;
+    $app.querySelector('#play').onclick = () => speakSeq(voice, [0.65, 0.95]);
+    $app.querySelector('#slow').onclick = () => speakSeq(voice, [0.65]);
+    $app.querySelector('#normal').onclick = () => speakSeq(voice, [0.95]);
+    $app.querySelector('#quit').onclick = () => {
+      if (!b.done || confirm('Stop building? You can come back any time.')) leaveBuild();
+    };
+    const show = $app.querySelector('#show');
+    if (show) show.onclick = () => { b.showText = true; renderBuild(); };
+    const said = $app.querySelector('#said');
+    if (said) said.onclick = () => {
+      // The translation comes after he's said it out loud.
+      b.revealed = true;
+      renderBuild();
+      speakSeq(voice, [0.95]);
+    };
+    const next = $app.querySelector('#next');
+    if (next) next.onclick = () => {
+      buildStepTime();
+      b.revealed = false;
+      b.showText = false;
+      if (last) {
+        if (!S.built) S.built = {};
+        S.built[lad.id] = today();
+        dayRec().bd = (dayRec().bd || 0) + 1;
+        b.done++;
+        b.li++;
+        b.si = 0;
+      } else {
+        b.si++;
+      }
+      save();
+      renderBuild();
+      const nl = b.list[b.li];
+      if (nl) speakSeq(nl.s[b.si][3] || nl.s[b.si][0], [0.65, 0.95]);
+    };
+    if (!b.stepStart || b.stepKey !== `${b.li}.${b.si}`) {
+      b.stepKey = `${b.li}.${b.si}`;
+      b.stepStart = Date.now();
+      if (b.li === 0 && b.si === 0 && !b.started) { b.started = true; speakSeq(voice, [0.65, 0.95]); }
+    }
+    window.scrollTo(0, 0);
+  }
+
+  function renderBuildDone() {
+    const b = building;
+    $app.innerHTML = `
+      <div class="done-screen">
+        <img src="icons/icon-192.png" alt="" width="96" height="96" style="border-radius:50%">
+        <div class="headline">${b.done} ${b.done === 1 ? 'sentence' : 'sentences'} built.</div>
+        <p class="muted">Tap any one to hear it again.</p>
+      </div>
+      <div class="card">
+        ${b.list.map(l => { const s = l.s[l.s.length - 1]; return `
+          <button class="ex built" data-i="${esc(s[3] || s[0])}">
+            <span><span class="w">${esc(s[0])}</span><span class="r">${esc(s[2])}</span></span>
+          </button>`; }).join('')}
+      </div>
+      <button class="btn primary" id="home">Done</button>
+      <button class="btn ghost" id="again">Build more</button>`;
+    $app.querySelectorAll('.built').forEach(el => el.onclick = () => speakSeq(el.dataset.i, [0.95]));
+    $app.querySelector('#home').onclick = leaveBuild;
+    $app.querySelector('#again').onclick = () => {
+      building = { list: pickBuilds(), li: 0, si: 0, revealed: false, showText: false, done: 0 };
+      renderBuild();
+    };
+    window.scrollTo(0, 0);
   }
 
   // ---------------------------------------------------------------------------
